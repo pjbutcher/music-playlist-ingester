@@ -9,10 +9,20 @@ from xml.etree.ElementTree import Element
 # spotifiy api limits the number of tracks you can add per api call
 NUM_TRACKS_PLAYLIST_LIMIT = 100
 
-def get_tracks(xml_root: Element) ->list[Element]:
+def get_tracks_from_xml(xml_root: Element) ->list[Element]:
     playlist_dict = next(iter(xml_root.findall('dict')))
     tracks_dict = next(iter(playlist_dict.findall('dict')))
     return tracks_dict.findall('dict')
+
+def filter_to_albums(tracks: list[Element]):
+    artist_albums = []
+    for track in tracks:
+        track_info = track_xml_to_dict(track)
+        if not track_info:
+            continue
+        artist_albums.append((track_info["Artist"], track_info["Album"]))
+    return set(artist_albums)
+
 
 def track_xml_to_dict(track_xml: Element) -> dict[str, str] | None:
     # itunes xml is in the format:
@@ -34,6 +44,14 @@ def get_spotify_id(track_info: dict[str, str], spotify: Spotify=None) -> str | N
          return None
     return result['tracks']['items'][0]['id']
 
+def get_spotify_album_id(artist: str, album:str, spotify: Spotify=None) -> str | None:
+    query = f"artist:{artist} album:{album}"
+    result = spotify.search(query, type='album')
+    if not result["albums"]["items"]:
+        print(f"Album not found in spotify: {album} by {artist}")
+        return None
+    return result["albums"]["items"][0]["id"]
+
 def main(file_path: str, user: str, playlist: str) -> None:
 
     # TODO: add option for public playlists
@@ -43,23 +61,22 @@ def main(file_path: str, user: str, playlist: str) -> None:
 
     tree = ET.parse(file_path)
     root = tree.getroot()
-    tracks = get_tracks(root)
-    spotify_ids = []
-    
-    # TODO: instead of going through track by track we could get unique albums 
-    # and add whole albums at a time
-    for track in tracks:
-        track_info = track_xml_to_dict(track)
-        if not track_info:
-            continue
-        spotify_id = get_spotify_id(track_info, spotify=spotify)
-        if not spotify_id:
-            continue
-        spotify_ids.append(spotify_id)
+    tracks = get_tracks_from_xml(root)
 
-    for spotify_ids_chunk in chunked(spotify_ids, NUM_TRACKS_PLAYLIST_LIMIT):
-        spotify.user_playlist_add_tracks(user, playlist['id'], spotify_ids_chunk)
-
+    artist_albums = filter_to_albums(tracks)
+    print(f"Found {len(artist_albums)} albums in apple playlist xml.")
+    spotify_album_ids = []
+    for artist, album in artist_albums:
+        album_id = get_spotify_album_id(artist, album, spotify)
+        if album_id is None:
+            continue
+        spotify_album_ids.append(album_id)
+    print(f"Found {len(spotify_album_ids)} albums in spotify.")
+    for i, spotify_album_id in enumerate(spotify_album_ids):
+        spotify_tracks = spotify.album_tracks(spotify_album_id)
+        track_ids = [track["id"] for track in spotify_tracks["items"]]
+        print(f"Adding {len(track_ids)} tracks for album {i+1}/{len(spotify_album_ids)}")
+        spotify.user_playlist_add_tracks(user, playlist["id"], track_ids)
 
 if __name__ == '__main__':
     typer.run(main)
